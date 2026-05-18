@@ -1,0 +1,171 @@
+#cloud-config
+# --------------------------------------------------------------------------- #
+#  Cloud-Init Konfiguration für die VM-Info-Demo                              #
+#                                                                             #
+#  Diese Datei wird beim ersten Boot von cloud-init ausgeführt und richtet    #
+#  vollautomatisch ein:                                                       #
+#    1. System-Updates + benötigte Pakete                                     #
+#    2. DuckDNS-Updater (systemd-Service + Timer alle 5 min)                  #
+#    3. Caddy (mit Auto-HTTPS via Let's Encrypt)                              #
+#    4. Python venv + FastAPI-App als systemd-Service                         #
+#                                                                             #
+#  Variablen (in $${...} eingesetzt durch Terraform's templatefile()):        #
+#    duckdns_subdomain - Subdomain bei DuckDNS                                #
+#    duckdns_token     - DuckDNS-Account-Token (secret!)                      #
+#    fqdn              - voll qualifizierter Domain-Name                      #
+#    app_py_b64        - Base64-codierter Inhalt von app/app.py               #
+#    requirements_b64  - Base64-codierter Inhalt von app/requirements.txt     #
+#    caddyfile_b64     - Base64-codierter, gerenderter Caddyfile-Inhalt       #
+# --------------------------------------------------------------------------- #
+
+# System bei erstem Boot updaten (Sicherheitspatches einspielen)
+package_update: true
+package_upgrade: true
+
+# Basis-Pakete, die wir in jedem Fall brauchen.
+# Caddy wird unten via runcmd aus dem offiziellen Repo nachinstalliert,
+# weil er nicht in den Standard-Ubuntu-Repos liegt.
+packages:
+  - python3
+  - python3-venv
+  - python3-pip
+  - python3-dev
+  - build-essential
+  - curl
+  - jq
+  - ca-certificates
+  - debian-keyring
+  - debian-archive-keyring
+  - apt-transport-https
+  - gnupg
+
+write_files:
+  # ----- DuckDNS-Updater-Script ----------------------------------------- #
+  # Aktualisiert den A-Record bei DuckDNS auf die public IP der VM.
+  # Wird beim Boot und danach alle 5 Minuten ausgeführt (siehe Timer unten).
+  - path: /etc/duckdns/update.sh
+    permissions: '0700'
+    owner: root:root
+    content: |
+      #!/bin/bash
+      # "ip=" leer lassen -> DuckDNS nimmt automatisch die Absender-IP
+      RESPONSE=$(curl -s --max-time 10 \
+        "https://www.duckdns.org/update?domains=${duckdns_subdomain}&token=${duckdns_token}&ip=")
+      logger -t duckdns "DuckDNS update response: $RESPONSE"
+      [ "$RESPONSE" = "OK" ] && exit 0 || exit 1
+
+  # ----- systemd Service-Unit für den DuckDNS-Updater ------------------- #
+  - path: /etc/systemd/system/duckdns-update.service
+    permissions: '0644'
+    content: |
+      [Unit]
+      Description=DuckDNS dynamic DNS update
+      After=network-online.target
+      Wants=network-online.target
+
+      [Service]
+      Type=oneshot
+      ExecStart=/etc/duckdns/update.sh
+
+  # ----- systemd Timer für DuckDNS (alle 5 Minuten) --------------------- #
+  - path: /etc/systemd/system/duckdns-update.timer
+    permissions: '0644'
+    content: |
+      [Unit]
+      Description=Run DuckDNS update every 5 minutes
+
+      [Timer]
+      OnBootSec=15s
+      OnUnitActiveSec=5min
+      Unit=duckdns-update.service
+
+      [Install]
+      WantedBy=timers.target
+
+  # ----- FastAPI-App ---------------------------------------------------- #
+  # Inhalt von app/app.py - vor Cloud-Init durch Terraform eingesetzt.
+  - path: /opt/vminfo/app.py
+    encoding: base64
+    permissions: '0644'
+    content: ${app_py_b64}
+
+  # ----- Python-Requirements ------------------------------------------- #
+  - path: /opt/vminfo/requirements.txt
+    encoding: base64
+    permissions: '0644'
+    content: ${requirements_b64}
+
+  # ----- systemd Service-Unit für die FastAPI-App ---------------------- #
+  # Läuft als unprivilegierter Nutzer 'vminfo' auf 127.0.0.1:8000
+  # Caddy macht den Reverse-Proxy + HTTPS-Termination davor.
+  - path: /etc/systemd/system/vminfo.service
+    permissions: '0644'
+    content: |
+      [Unit]
+      Description=VM Info FastAPI service
+      After=network.target
+      Wants=network-online.target
+
+      [Service]
+      Type=simple
+      User=vminfo
+      Group=vminfo
+      WorkingDirectory=/opt/vminfo
+      ExecStart=/opt/vminfo/venv/bin/uvicorn app:app --host 127.0.0.1 --port 8000
+      Restart=on-failure
+      RestartSec=5s
+      # Härtung
+      NoNewPrivileges=true
+      ProtectSystem=strict
+      ProtectHome=true
+      PrivateTmp=true
+
+      [Install]
+      WantedBy=multi-user.target
+
+  # ----- Caddyfile (HTTPS Reverse-Proxy) -------------------------------- #
+  - path: /etc/caddy/Caddyfile
+    encoding: base64
+    permissions: '0644'
+    content: ${caddyfile_b64}
+
+# --------------------------------------------------------------------------- #
+#  Ausführbare Schritte beim ersten Boot                                      #
+# --------------------------------------------------------------------------- #
+runcmd:
+  # === 1. Service-User für die FastAPI-App anlegen =========================
+  - useradd --system --home /opt/vminfo --shell /usr/sbin/nologin vminfo || true
+
+  # === 2. Caddy aus offiziellem Repo installieren ==========================
+  # (Cloudsmith liefert das offizielle Caddy-APT-Repository.)
+  - curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/gpg.key' | gpg --dearmor -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg
+  - curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/debian.deb.txt' | tee /etc/apt/sources.list.d/caddy-stable.list
+  - apt-get update
+  - apt-get install -y caddy
+
+  # === 3. DuckDNS sofort triggern, damit DNS schon vor Caddy steht =========
+  - systemctl daemon-reload
+  - systemctl enable --now duckdns-update.timer
+  - systemctl start duckdns-update.service
+  # Caddy braucht den korrekten A-Record bevor ACME zuschlägt -> kurz warten.
+  - sleep 30
+
+  # === 4. Python Virtualenv + Dependencies =================================
+  - python3 -m venv /opt/vminfo/venv
+  - /opt/vminfo/venv/bin/pip install --upgrade pip
+  - /opt/vminfo/venv/bin/pip install -r /opt/vminfo/requirements.txt
+  - chown -R vminfo:vminfo /opt/vminfo
+
+  # === 5. FastAPI-Service starten ==========================================
+  - systemctl daemon-reload
+  - systemctl enable --now vminfo.service
+
+  # === 6. Caddy neu starten, damit er den geschriebenen Caddyfile liest ====
+  - systemctl restart caddy
+
+# Hostnamen sprechend setzen
+hostname: ${duckdns_subdomain}
+preserve_hostname: false
+
+# Reboot ist nicht zwingend nötig, das System läuft direkt los.
+final_message: "Cloud-Init complete. VM is ready at https://${fqdn}/"

@@ -1,0 +1,117 @@
+# --------------------------------------------------------------------------- #
+#  GitHub Actions Workflow: Infrastruktur erstellen / aktualisieren           #
+#                                                                             #
+#  Trigger: ausschließlich manuell ("workflow_dispatch") über den GitHub-UI   #
+#  Tab "Actions". Damit es nicht passieren kann, dass jemand mit einem        #
+#  unbedachten Push automatisch Cloud-Kosten verursacht.                      #
+# --------------------------------------------------------------------------- #
+
+name: Infra Apply (Exoscale)
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: 'Bestätigung: tippe "yes" um die Infrastruktur zu erstellen'
+        required: true
+        default: 'no'
+
+# Stellt sicher, dass nur ein apply gleichzeitig läuft.
+concurrency:
+  group: terraform-exoscale
+  cancel-in-progress: false
+
+# Minimal-Rechte für GITHUB_TOKEN (Least-Privilege).
+permissions:
+  contents: read
+
+jobs:
+  apply:
+    name: Terraform Apply
+    runs-on: ubuntu-latest
+
+    # Pfad zum Terraform-Verzeichnis im Repository.
+    defaults:
+      run:
+        working-directory: Ehold_Lucas/Abgabe_2_260518/terraform
+
+    env:
+      # Exoscale-Provider authentifiziert sich darüber automatisch.
+      EXOSCALE_API_KEY:    ${{ secrets.EXOSCALE_API_KEY }}
+      EXOSCALE_API_SECRET: ${{ secrets.EXOSCALE_API_SECRET }}
+
+      # TF_VAR_*: Terraform-Variablen werden via Umgebungsvariablen befüllt.
+      TF_VAR_ssh_public_key:    ${{ secrets.SSH_PUBLIC_KEY }}
+      TF_VAR_duckdns_subdomain: ${{ secrets.DUCKDNS_SUBDOMAIN }}
+      TF_VAR_duckdns_token:     ${{ secrets.DUCKDNS_TOKEN }}
+
+      # Kein Color-Output -> bessere Lesbarkeit in den Actions-Logs.
+      TF_IN_AUTOMATION: "true"
+      TF_INPUT: "0"
+
+    steps:
+      # ---------- 0. Confirm-Gate -------------------------------------- #
+      - name: Bestätigung prüfen
+        if: ${{ inputs.confirm != 'yes' }}
+        run: |
+          echo "::error::Workflow abgebrochen – bitte 'yes' im Eingabefeld eintippen."
+          exit 1
+
+      # ---------- 1. Code auschecken ----------------------------------- #
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      # ---------- 2. Terraform installieren ---------------------------- #
+      - name: Terraform installieren
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.9.8"
+
+      # ---------- 3. Init ---------------------------------------------- #
+      # State-Datei liegt aktuell nur lokal/im Runner. Für ein "echtes"
+      # Setup wäre hier ein Remote-Backend (z.B. S3-kompatibles SOS) zu
+      # konfigurieren - bewusst weggelassen, um die Übung simpel zu halten.
+      - name: terraform init
+        run: terraform init -input=false
+
+      # ---------- 4. Format-Check (informativ) ------------------------- #
+      - name: terraform fmt -check
+        run: terraform fmt -check -recursive
+        continue-on-error: true
+
+      # ---------- 5. Validate ------------------------------------------ #
+      - name: terraform validate
+        run: terraform validate -no-color
+
+      # ---------- 6. Plan ---------------------------------------------- #
+      - name: terraform plan
+        run: terraform plan -input=false -no-color -out=tfplan
+
+      # ---------- 7. Apply --------------------------------------------- #
+      - name: terraform apply
+        run: terraform apply -input=false -auto-approve tfplan
+
+      # ---------- 8. Outputs ausgeben ---------------------------------- #
+      # Damit der User direkt im Workflow-Log sieht, wohin er sich verbinden
+      # kann (FQDN, HTML-URL, JSON-URL).
+      - name: Outputs anzeigen
+        run: terraform output
+
+      # ---------- 9. Smoke-Test ---------------------------------------- #
+      # Kleiner End-to-End-Check: warte bis zu 5 Minuten auf einen HTTP-200
+      # vom JSON-Endpoint - damit der Workflow rot wird, wenn die VM bootet
+      # aber der Webservice nicht erreichbar wird.
+      - name: HTTP Smoke-Test (max. 5 min Wartezeit)
+        run: |
+          URL=$(terraform output -raw api_url)
+          echo "Warte auf $URL ..."
+          for i in $(seq 1 30); do
+            if curl -fsS --max-time 5 "$URL" > /dev/null; then
+              echo "::notice::Endpoint $URL erreichbar nach $((i*10)) Sekunden."
+              curl -s "$URL" | head -c 800
+              exit 0
+            fi
+            echo "  Versuch $i/30 - noch nicht erreichbar, warte 10s..."
+            sleep 10
+          done
+          echo "::warning::Endpoint nach 5 Minuten noch nicht erreichbar - bitte manuell prüfen."

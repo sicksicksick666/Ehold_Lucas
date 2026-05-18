@@ -1,0 +1,6 @@
+# Web-Framework
+fastapi==0.115.4
+# ASGI-Server zum Ausführen der FastAPI-App
+uvicorn[standard]==0.32.0
+# Plattformunabhängige System-Infos (CPU, RAM, Disk, Netz, Partitionen)
+psutil==6.1.0
