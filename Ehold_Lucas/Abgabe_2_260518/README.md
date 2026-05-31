@@ -2,7 +2,7 @@
 
 > **Kurs:** VICA SS26 · Hochschule Burgenland · BITI
 > **Autor:** Lucas Ehold
-> **Stack:** Terraform · GitHub Actions · Exoscale · Cloud-Init · Caddy · FastAPI · DuckDNS
+> **Stack:** Terraform · GitHub Actions · Exoscale (Compute + SOS Remote-State) · Cloud-Init · Caddy · FastAPI · DuckDNS
 
 ## 1. Zielzustand
 
@@ -101,6 +101,11 @@ Im eigenen Fork unter **Settings → Secrets and variables → Actions → New r
 | `DUCKDNS_SUBDOMAIN` | nur der vordere Teil, z. B. `lucas-vica` |
 | `DUCKDNS_TOKEN` | DuckDNS-Token |
 
+> **Hinweis:** Für das Terraform-Remote-State-Backend (Exoscale SOS) ist **kein
+> zusätzliches Secret** nötig. Die Workflows setzen die AWS-Standard-Variablen
+> `AWS_ACCESS_KEY_ID`/`AWS_SECRET_ACCESS_KEY` automatisch aus demselben
+> Exoscale-Key. Siehe Abschnitt 4.5.
+
 ### 4.4 Workflows aktivieren
 
 Die beiden Dateien aus `github-workflows/` müssen am **Wurzelverzeichnis des Forks** in `.github/workflows/` liegen, damit GitHub sie ausführt:
@@ -111,6 +116,24 @@ mkdir -p .github/workflows
 cp Ehold_Lucas/Abgabe_2_260518/github-workflows/*.yml .github/workflows/
 git add .github && git commit -m "Activate Abgabe 2 workflows" && git push
 ```
+
+### 4.5 Terraform Remote-State (Exoscale SOS) – vollautomatisch
+
+Der Terraform-State wird **nicht** lokal gehalten, sondern in einem
+S3-kompatiblen **Exoscale-SOS-Bucket** (`ehold-vica-abgabe2-tfstate`,
+Zone `at-vie-1`). Das ist entscheidend, weil GitHub-Actions-Runner bei jedem
+Lauf frisch sind: Nur über den geteilten Remote-State "weiß" der
+**Destroy**-Workflow, welche Ressourcen der **Apply**-Workflow angelegt hat.
+
+Der Bucket wird vom Workflow **vor** `terraform init` idempotent angelegt
+(`aws s3 mb ... || true`) – es ist also kein manueller Schritt nötig.
+Konfiguriert ist das Backend in `terraform/backend.tf`; die nötigen
+`skip_*`-Flags (`skip_s3_checksum`, `use_path_style`, …) stellen die
+Kompatibilität mit dem Nicht-AWS-Endpunkt sicher.
+
+> **Versions-Hinweis:** Terraform ist bewusst auf **1.9.8** gepinnt. Neuere
+> Versionen (1.11+) haben bekannte Regressionen mit S3-kompatiblen
+> Nicht-AWS-Backends (Checksum-Handling) – 1.9.8 ist hier stabil.
 
 ## 5. Bedienung – Step by Step
 
@@ -228,7 +251,7 @@ Liefert exakt dieselben Daten in maschinenlesbarer Form, z. B.:
 
 ## 10. Bekannte Limitationen / nicht im Scope
 
-- **Kein Remote-State** für Terraform (vereinfacht die Übung; bei Mehrpersonen-Setup wäre z. B. ein Exoscale-SOS-Backend angebracht).
+- **Kein State-Locking** – der State liegt in Exoscale SOS (siehe 4.5), aber ohne verteiltes Lock (z. B. DynamoDB). Bei nur einer Person, die die Workflows seriell startet, ist das unkritisch; bei parallelen Läufen könnte es zu State-Konflikten kommen (das `concurrency`-Gate im Workflow verhindert dies zusätzlich).
 - **Single-AZ, keine HA** – die VM ist eine einzelne Instanz; Ausfall = Downtime.
 - **Keine Backups** – Disk wird beim Destroy mit gelöscht.
 - **Public SSH (Port 22) offen für 0.0.0.0/0** – für eine Übung praktikabel, in Produktion via Bastion oder Tailscale einschränken.

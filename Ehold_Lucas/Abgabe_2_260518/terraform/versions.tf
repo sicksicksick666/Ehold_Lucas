@@ -16,14 +16,6 @@ terraform {
       source  = "exoscale/exoscale"
       version = "~> 0.62"
     }
-
-    # http-Provider wird benutzt, um beim Apply-Lauf die public IP des
-    # GitHub-Runners zu ermitteln (für eventuelle Debug-Zwecke). Nicht
-    # zwingend erforderlich, aber praktisch.
-    http = {
-      source  = "hashicorp/http"
-      version = "~> 3.4"
-    }
   }
 }
 

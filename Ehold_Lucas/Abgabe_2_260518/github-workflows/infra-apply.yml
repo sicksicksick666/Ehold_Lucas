@@ -40,6 +40,12 @@ jobs:
       EXOSCALE_API_KEY:    ${{ secrets.EXOSCALE_API_KEY }}
       EXOSCALE_API_SECRET: ${{ secrets.EXOSCALE_API_SECRET }}
 
+      # Das SOS-State-Backend (backend.tf) authentifiziert sich über die
+      # AWS-Standard-Env-Vars - hier mit DENSELBEN Exoscale-Credentials.
+      AWS_ACCESS_KEY_ID:     ${{ secrets.EXOSCALE_API_KEY }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.EXOSCALE_API_SECRET }}
+      AWS_DEFAULT_REGION:    at-vie-1
+
       # TF_VAR_*: Terraform-Variablen werden via Umgebungsvariablen befüllt.
       TF_VAR_ssh_public_key:    ${{ secrets.SSH_PUBLIC_KEY }}
       TF_VAR_duckdns_subdomain: ${{ secrets.DUCKDNS_SUBDOMAIN }}
@@ -67,10 +73,20 @@ jobs:
         with:
           terraform_version: "1.9.8"
 
-      # ---------- 3. Init ---------------------------------------------- #
-      # State-Datei liegt aktuell nur lokal/im Runner. Für ein "echtes"
-      # Setup wäre hier ein Remote-Backend (z.B. S3-kompatibles SOS) zu
-      # konfigurieren - bewusst weggelassen, um die Übung simpel zu halten.
+      # ---------- 3. Init (mit Remote-State im SOS-Bucket) ------------- #
+      # Lädt die Provider und initialisiert das S3/SOS-Backend (backend.tf),
+      # sodass Apply und Destroy denselben State teilen.
+      # ---------- 2b. SOS State-Bucket sicherstellen ------------------- #
+      # Das Remote-State-Backend (siehe terraform/backend.tf) benötigt den
+      # Bucket, BEVOR `terraform init` läuft. Wir legen ihn idempotent an
+      # (|| true -> kein Fehler, falls er bereits existiert). Die AWS-CLI ist
+      # auf GitHub-Runnern vorinstalliert und spricht den SOS-Endpunkt an.
+      - name: SOS State-Bucket sicherstellen
+        run: |
+          aws s3 mb "s3://ehold-vica-abgabe2-tfstate" \
+            --endpoint-url https://sos-at-vie-1.exo.io \
+            --region at-vie-1 || true
+
       - name: terraform init
         run: terraform init -input=false
 

@@ -78,7 +78,7 @@ resource "exoscale_compute_instance" "vm" {
   type               = var.instance_type
   template_id        = data.exoscale_template.ubuntu.id
   disk_size          = var.disk_size
-  ssh_key            = exoscale_ssh_key.deploy.name
+  ssh_keys           = [exoscale_ssh_key.deploy.name]  # 'ssh_keys' (Set) ist der aktuelle Provider-Arg; 'ssh_key' ist deprecated
   security_group_ids = [exoscale_security_group.web.id]
 
   # Labels helfen später bei Abrechnung & Auswertung in der Exoscale-Console.
