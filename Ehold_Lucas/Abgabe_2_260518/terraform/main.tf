@@ -95,7 +95,12 @@ resource "exoscale_compute_instance" "vm" {
   # eingebettet, damit Sonderzeichen (insb. im Python-Code) das YAML nicht
   # zerlegen können. Das Caddyfile wird zusätzlich per templatefile() mit
   # dem FQDN gerendert, bevor es codiert wird.
-  user_data = templatefile("${path.module}/cloud-init.yaml.tftpl", {
+  # base64gzip(): Exoscale begrenzt user_data auf 32768 Bytes (auf die
+  # base64-codierte Form). Unser Cloud-Init ist roh ~27 KB -> base64 ~37 KB
+  # und damit zu groß. gzip+base64 schrumpft es auf ~14 KB. Der Provider
+  # reicht bereits base64-codierte Daten unveraendert durch, und cloud-init
+  # erkennt/entpackt das gzip auf der VM automatisch.
+  user_data = base64gzip(templatefile("${path.module}/cloud-init.yaml.tftpl", {
     duckdns_subdomain = var.duckdns_subdomain
     duckdns_token     = var.duckdns_token
     fqdn              = "${var.duckdns_subdomain}.duckdns.org"
@@ -104,5 +109,5 @@ resource "exoscale_compute_instance" "vm" {
     caddyfile_b64 = base64encode(templatefile("${path.module}/../app/Caddyfile.tpl", {
       fqdn = "${var.duckdns_subdomain}.duckdns.org"
     }))
-  })
+  }))
 }
