@@ -136,6 +136,14 @@ runcmd:
   # === 1. Service-User für die FastAPI-App anlegen =========================
   - useradd --system --home /opt/vminfo --shell /usr/sbin/nologin vminfo || true
 
+  # === 1b. Caddy-System-User anlegen =======================================
+  # Caddy laeuft laut systemd-Unit als User/Group 'caddy'. In manchen
+  # Cloud-Init-Laeufen legt das Paket-postinst diesen User nicht zuverlaessig
+  # an -> caddy.service bricht dann mit Status 217/USER ab (kein Port 443).
+  # Daher legen wir ihn hier vorab explizit und idempotent an.
+  - groupadd --system caddy || true
+  - useradd --system --gid caddy --create-home --home-dir /var/lib/caddy --shell /usr/sbin/nologin caddy || true
+
   # === 2. Caddy aus offiziellem Repo installieren ==========================
   # (Cloudsmith liefert das offizielle Caddy-APT-Repository.)
   - curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/gpg.key' | gpg --dearmor -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg

@@ -106,7 +106,7 @@ resource "exoscale_compute_instance" "vm" {
     fqdn              = "${var.duckdns_subdomain}.duckdns.org"
     app_py_b64        = base64encode(file("${path.module}/../app/app.py"))
     requirements_b64  = base64encode(file("${path.module}/../app/requirements.txt"))
-    caddyfile_b64 = base64encode(templatefile("${path.module}/../app/Caddyfile.tpl", {
+    caddyfile_b64     = base64encode(templatefile("${path.module}/../app/Caddyfile.tpl", {
       fqdn = "${var.duckdns_subdomain}.duckdns.org"
     }))
   }))
